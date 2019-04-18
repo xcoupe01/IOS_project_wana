@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+
+function start ()
+{
+#funkce projede argumenty programu, rozhodne, ktere funce je treba zavolat (pomoci promenych do* a with*)
+#a ulozi poptrebna data do promenych. Na konci do promene files ulozi zbytek argumentu (pouze nazvy zadanych souboru)
+doafter=false
+dobefore=false
+doip=false
+douri=false
+dolistip=false
+dolisthosts=false
+dolisturi=false
+dohistip=false
+dohistload=false
+while true
+do
+  case $1 in
+	  "-a")
+		doafter=true
+    if [[ ! "$2" =~ ^[0-9]+\-[0-9]+\-[0-9]+ ]]; then
+      echo "Error! Wrong date type for after filter!"
+      exit 1
+    fi
+    if [[ ! "$3" =~ [0-9]+\:[0-9]+\:[0-9]+ ]] && [[ ! "$3" =~ [0-9]+\:[0-9]+ ]]; then
+      echo "Error! Wrong time type for after filter!"
+      exit 2
+    fi
+    withafter="$2 $3"
+    withafter=$( date -d "$withafter" +%s )
+		shift 1
+		;;
+	  "-b")
+		dobefore=true
+    if [[ ! "$2" =~ ^[0-9]+\-[0-9]+\-[0-9]+ ]]; then
+      echo "Error! Wrong date type for before filter!"
+      exit 3
+    fi
+    if [[ ! "$3" =~ [0-9]+\:[0-9]+\:[0-9]+ ]] && [[ ! "$3" =~ [0-9]+\:[0-9]+ ]]; then
+      echo "Error! Wrong time type for before filter!"
+      exit 4
+    fi
+		withbefore="$2 $3"
+    withbefore=$( date -d "$withbefore" +%s )
+		shift 1
+		;;
+	  "-ip"|"--ip")
+	        doip=true
+		withip=$2
+    if [[ ! "$withip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ ! "$withip" =~ ^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$ ]]; then
+      echo "Error! wrong ip format for ip filter!"
+      exit 5
+    fi
+		;;
+	  "-uri"|"--uri")
+		douri=true
+		withuri=$2
+		;;
+	  *)
+		break
+		;;
+	esac
+  shift 2
+done
+if [ "$1" == "list-ip" ] || [ "$1" == "list-hosts" ] || [ "$1" == "list-uri" ] || [ "$1" == "hist-ip" ] || [ "$1" == "hist-load" ] ; then
+  todo="$1"
+  shift 1
+fi
+files=$*
+numof=$#
+return 0
+}
+
+function ffilter (){
+  # funkce propusi jen ty radky, ktere vyhovuji zadanym podminkam
+  while read p
+  do
+    # cyklus pres jednotlive radky souboru
+    # vyber datumu z radku a jeho prevod na epoch time, aby se datumy daly porovnat
+    datum=$( cut -d ']' -f1 <<< "$p")
+    datum=$( cut -d '[' -f2 <<< "$datum")
+    datum=$( sed -e 's,/,-,g' -e 's,:, ,' <<< "$datum")
+    datum=$( date -d "$datum" +%s)      # vyber ip adresy z radku do promenne
+    ipadr=$( cut -d ' ' -f1 <<< "$p")   # vyber URI z radku do promenne
+    uri=$( cut -d '"' -f2 <<< "$p")
+    uri=$( cut -d ' ' -f2 <<< "$uri")
+    if [ $doafter == true ]; then
+      if [ "$datum" -le "$withafter" ]; then
+        continue
+      fi
+    fi
+    if [ $dobefore == true ]; then
+      if [ "$datum" -ge "$withbefore" ]; then
+        continue
+      fi
+    fi
+    if [ $doip == true ]; then
+      if ! [[ "$withip" =~ "$ipadr" ]]; then
+         continue
+      fi
+    fi
+    if [ $douri == true ]; then
+      if ! [[ "$withuri" =~ "$uri" ]]; then
+        continue
+      fi
+    fi
+    echo $p
+  done
+}
+
+function fprint (){
+  # funkce zpracuje ziskane radky podle zadaneho prikazu
+  case $todo in
+     "list-ip")
+        cut -d ' ' -f1 | sort | uniq
+       ;;
+     "list-hosts")  # prevod ip adres na domeny pomoci host
+        cut -d ' ' -f1 | sort | uniq |
+        while read p
+        do
+          adr=$(dig +short -x "$p" )
+          if [ -z "$adr" ]
+          then
+            echo $p
+          else
+            echo "$adr"
+          fi
+        done
+       ;;
+     "list-uri")
+        cut -d '"' -f2 | cut -d ' ' -f2
+       ;;
+     "hist-ip")
+        cut -d ' ' -f1 | sort | uniq -c | sort -r -n |
+        awk '{printf "%s (%s): " ,$2,$1} {counter=$1} {while (counter>1) { printf "#"
+        counter--}} {print "#"}'
+       ;;
+     "hist-load")
+        cut -d ' ' -f4 | cut -d '[' -f2 | cut -d ':' -f1,2 | sort -n | uniq -c |
+        awk '{printf "%s:00 (%s): " ,$2,$1} {counter=$1} {while (counter>1) { printf "#"
+        counter--}} {print "#"}' | sed 's/:/ /'
+       ;;
+     *)  # pokud nedostane program zadny prikaz, opisuje zaznamy na standardni vystup
+      while read p
+      do
+        echo $p
+      done
+     ;;
+   esac
+}
+
+#----------   MAIN   ----------#
+
+start $*
+i=1
+while [ $i -le $numof ]; do
+  checklog=$(cut -d" " -f$i <<< "$files")
+  if [[ ! -r $checklog ]]; then
+    printf "Error! File \"%s\" is not readable or does not exist! \n" "$checklog"
+    exit 6
+  fi
+  i=$((i+1))
+done
+i=1
+while [ $i -le $numof ]; do
+  readlog=$(cut -d" " -f$i <<< "$files")
+  if [[ $readlog =~ \.gz$ ]]
+  then
+    gunzip -c "$readlog"
+  else
+    cat $readlog
+  fi
+  i=$((i+1))
+done | ffilter | fprint
+exit 0
+
+# all exit codes:
+# 0 - Everything OK
+# 1 - Wrong date type for after filter
+# 2 - Wrong time type for after filter
+# 3 - Wrong date type for before filter
+# 4 - Wrong time type for before filter
+# 5 - Wrong ip format for ip filter
+# 6 - File couldnt be opened or is not readable
